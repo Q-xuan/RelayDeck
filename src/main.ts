@@ -6,8 +6,8 @@ import {
   createIcons,
 } from "lucide";
 import "./styles.css";
-import { call } from "./api";
-import type { AppSettings, AppSnapshot, CodexApplyResult, Provider, ProviderInput, ProviderStatus, RequestLog } from "./types";
+import { call, isDesktop } from "./api";
+import type { AppSettings, AppSnapshot, CodexApplyAndRestartResult, CodexApplyResult, Provider, ProviderInput, ProviderStatus, RequestLog } from "./types";
 
 type View = "overview" | "providers" | "activity" | "settings";
 
@@ -248,7 +248,7 @@ function render(): void {
       <div class="version">RelayDeck v0.1.0</div>
     </aside>
     <main class="workspace">
-      <header class="topbar"><div class="page-title">${title}</div><div class="page-meta">${meta}</div><div class="topbar-actions"><button class="button" data-action="open-import"><i data-lucide="import"></i>快速导入</button><button class="button primary" data-action="add-provider"><i data-lucide="plus"></i>添加 Provider</button></div></header>
+      <header class="topbar"><div class="page-title">${title}</div><div class="page-meta">${meta}</div>${isDesktop() ? "" : `<span class="preview-badge" title="本机操作仅在 RelayDeck 桌面版可用">浏览器预览</span>`}<div class="topbar-actions"><button class="button" data-action="open-import"><i data-lucide="import"></i>快速导入</button><button class="button primary" data-action="add-provider"><i data-lucide="plus"></i>添加 Provider</button></div></header>
       <div class="content">${activeView === "overview" ? overviewView() : activeView === "providers" ? providersView() : activeView === "activity" ? activityView() : settingsView()}</div>
     </main>
   </div>`;
@@ -343,6 +343,10 @@ async function resetAccessKey(): Promise<void> {
 }
 
 async function applyCodexConfig(): Promise<void> {
+  if (!isDesktop()) {
+    toast("浏览器预览不能修改本机 Codex，请使用 RelayDeck.exe", "error");
+    return;
+  }
   try {
     const result = await call<CodexApplyResult>("apply_codex_config");
     await reload();
@@ -351,12 +355,16 @@ async function applyCodexConfig(): Promise<void> {
 }
 
 async function applyAndRestartCodex(): Promise<void> {
+  if (!isDesktop()) {
+    toast("浏览器预览不能重启 Codex，请使用 RelayDeck.exe", "error");
+    return;
+  }
   if (!window.confirm("将备份并应用配置，然后关闭所有 Codex 窗口并重新启动。未保存的 Codex 任务会中断，确定继续？")) return;
   try {
-    const result = await call<CodexApplyResult>("apply_codex_config");
-    await call("restart_codex");
+    const result = await call<CodexApplyAndRestartResult>("apply_and_restart_codex");
     await reload();
-    toast(`配置已应用，Codex 正在重启 · ${result.model}`);
+    const version = result.restart.version ? ` ${result.restart.version}` : "";
+    toast(`已应用 ${result.apply.model}，正在启动 ${result.restart.appName}${version}`);
   } catch (error) { toast(String(error), "error"); }
 }
 
@@ -380,7 +388,7 @@ function openProviderModal(provider?: Provider): void {
   const form = `<form id="provider-form" class="form-grid">
     <div class="field full"><label for="name">名称</label><input class="input" id="name" name="name" value="${escapeHtml(provider?.name || "")}" placeholder="例如：主力线路" required /></div>
     <div class="field full"><label for="baseUrl">API 地址</label><input class="input" id="baseUrl" name="baseUrl" type="url" value="${escapeHtml(provider?.baseUrl || "")}" placeholder="https://example.com/v1" required /></div>
-    <div class="field full"><label for="apiKey">API Key</label><input class="input" id="apiKey" name="apiKey" type="password" autocomplete="off" placeholder="${provider?.hasKey ? "留空以保留当前密钥" : "sk-..."}" ${provider?.hasKey ? "" : "required"} /><div class="field-hint">保存后自动获取可用模型</div></div>
+    <div class="field full"><label for="apiKey">API Key</label><input class="input" id="apiKey" name="apiKey" type="password" autocomplete="off" placeholder="${provider?.hasKey ? "留空以保留当前密钥" : "sk-..."}" ${provider?.hasKey ? "" : "required"} /><div class="field-hint">保存后会获取模型，并向选中模型发送一次最小请求验证 API Key；可能产生极少量 token 费用</div></div>
     <div class="field"><label for="priority">路由优先级</label><input class="input" id="priority" name="priority" type="number" min="1" max="99" value="${provider?.priority || snapshot.providers.length + 1}" required /></div>
     <div class="field"><label for="enabled">加入路由</label><select class="select" id="enabled" name="enabled"><option value="true" ${provider?.enabled !== false ? "selected" : ""}>启用</option><option value="false" ${provider?.enabled === false ? "selected" : ""}>停用</option></select></div>
   </form>`;

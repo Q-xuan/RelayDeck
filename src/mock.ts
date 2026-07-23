@@ -114,6 +114,12 @@ export async function mockInvoke<T>(command: string, args: Record<string, unknow
     return { configPath: state.codex.configPath, model: state.codex.activeModel } as T;
   }
   if (command === "restart_codex") return undefined as T;
+  if (command === "apply_and_restart_codex") {
+    return {
+      apply: { configPath: state.codex.configPath, model: state.codex.activeModel },
+      restart: { appName: "ChatGPT", version: "preview" },
+    } as T;
+  }
   if (command === "import_providers") {
     const inputs = args.providers as ProviderInput[];
     for (const input of inputs) {

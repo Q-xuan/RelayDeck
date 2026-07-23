@@ -130,3 +130,18 @@ pub struct CodexApplyResult {
     pub backup_path: Option<String>,
     pub model: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRestartResult {
+    pub app_name: String,
+    pub version: Option<String>,
+    pub installed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexApplyAndRestartResult {
+    pub apply: CodexApplyResult,
+    pub restart: CodexRestartResult,
+}

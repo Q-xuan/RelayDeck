@@ -3,7 +3,9 @@ use std::{env, fs, path::PathBuf, process::Command};
 use chrono::Local;
 use toml_edit::{table, value, DocumentMut};
 
-use crate::{models::{AppSettings, CodexApplyResult, CodexStatus}, RelayError};
+use serde::Deserialize;
+
+use crate::{models::{AppSettings, CodexApplyResult, CodexRestartResult, CodexStatus}, RelayError};
 
 fn config_path() -> Result<PathBuf, RelayError> {
     let home = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).ok_or_else(|| RelayError::InvalidInput("无法定位用户目录".into()))?;
@@ -48,7 +50,8 @@ fn write_codex_env(config_path: &PathBuf, key: &str) -> Result<(), RelayError> {
     let mut found = false;
     let mut lines = content.lines().map(str::to_owned).collect::<Vec<_>>();
     for line in &mut lines {
-        if line.trim_start().starts_with("RELAYDECK_API_KEY=") {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("RELAYDECK_API_KEY=") || trimmed.starts_with("export RELAYDECK_API_KEY=") {
             *line = format!("RELAYDECK_API_KEY={key}");
             found = true;
         }
@@ -58,26 +61,124 @@ fn write_codex_env(config_path: &PathBuf, key: &str) -> Result<(), RelayError> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RestartTarget {
+    kind: String,
+    launch: String,
+    app_name: String,
+    version: Option<String>,
+    installed_at: Option<String>,
+}
+
 #[cfg(windows)]
-pub fn restart() -> Result<(), RelayError> {
+pub(crate) fn discover_restart_target() -> Result<RestartTarget, RelayError> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const SCRIPT: &str = r#"
+$targets = @()
+Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | ForEach-Object {
+  $pkg = $_
+  $manifest = Get-AppxPackageManifest -Package $pkg.PackageFullName
+  $application = $manifest.Package.Applications.Application | Where-Object { $_.Executable -match 'ChatGPT' } | Select-Object -First 1
+  if (-not $application) { $application = $manifest.Package.Applications.Application | Select-Object -First 1 }
+  if ($application) {
+    $install = Get-Item -LiteralPath $pkg.InstallLocation -ErrorAction SilentlyContinue
+    $stamp = if ($install) { $install.LastWriteTimeUtc } else { [datetime]::MinValue }
+    $targets += [pscustomobject]@{
+      kind = 'appx'; launch = $pkg.PackageFamilyName + '!' + $application.Id; appName = 'ChatGPT'
+      version = [string]$pkg.Version; installedAt = $stamp.ToString('o'); sort = $stamp.Ticks
+    }
+  }
+}
+$localRoots = @("$env:LOCALAPPDATA\Programs\ChatGPT", "$env:LOCALAPPDATA\OpenAI\ChatGPT")
+foreach ($root in $localRoots) {
+  Get-ChildItem -LiteralPath $root -Filter 'ChatGPT.exe' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $targets += [pscustomobject]@{
+      kind = 'exe'; launch = $_.FullName; appName = 'ChatGPT'
+      version = $_.VersionInfo.ProductVersion; installedAt = $_.LastWriteTimeUtc.ToString('o'); sort = $_.LastWriteTimeUtc.Ticks
+    }
+  }
+}
+if (-not $targets) {
+  Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue | Where-Object { $_.Path } | ForEach-Object {
+    $path = $_.Path
+    if ($path -match '\\WindowsApps\\(?<package>OpenAI\.Codex_[^\\]+)\\') {
+      $package = $Matches.package
+      if ($package -match '^(?<name>.+?)_[^_]+_[^_]+__(?<publisher>.+)$') {
+        $folder = Get-Item -LiteralPath (Split-Path (Split-Path $path -Parent) -Parent) -ErrorAction SilentlyContinue
+        $stamp = if ($folder) { $folder.LastWriteTimeUtc } else { $_.StartTime.ToUniversalTime() }
+        $targets += [pscustomobject]@{
+          kind = 'appx'; launch = $Matches.name + '_' + $Matches.publisher + '!App'; appName = 'ChatGPT'
+          version = $null; installedAt = $stamp.ToString('o'); sort = $stamp.Ticks
+        }
+      }
+    } else {
+      $file = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+      if ($file) {
+        $targets += [pscustomobject]@{
+          kind = 'exe'; launch = $file.FullName; appName = 'ChatGPT'
+          version = $file.VersionInfo.ProductVersion; installedAt = $file.LastWriteTimeUtc.ToString('o'); sort = $file.LastWriteTimeUtc.Ticks
+        }
+      }
+    }
+  }
+}
+if (-not $targets) {
+  Get-StartApps | Where-Object { $_.Name -match 'ChatGPT|Codex' } | ForEach-Object {
+    $targets += [pscustomobject]@{ kind = 'appx'; launch = $_.AppID; appName = $_.Name; version = $null; installedAt = $null; sort = 0 }
+  }
+}
+$target = $targets | Sort-Object -Property @{ Expression = 'sort'; Descending = $true } | Select-Object -First 1
+if ($target) { $target | Select-Object kind,launch,appName,version,installedAt | ConvertTo-Json -Compress }
+"#;
     let discover = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "$app = Get-StartApps | Where-Object { $_.Name -match 'Codex' } | Select-Object -First 1; if ($app) { $app.AppID } else { $pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Select-Object -First 1; if ($pkg) { $manifest = Get-AppxPackageManifest -Package $pkg.PackageFullName; $application = $manifest.Package.Applications.Application | Select-Object -First 1; $pkg.PackageFamilyName + '!' + $application.Id } }"])
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
-    let app_id = String::from_utf8_lossy(&discover.stdout).trim().replace('\'', "''");
-    if app_id.is_empty() { return Err(RelayError::InvalidInput("没有找到已安装的 Codex 桌面应用".into())); }
-    let script = format!("Start-Sleep -Milliseconds 700; Get-Process -Name 'Codex' -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 2; Start-Process 'shell:AppsFolder\\{app_id}'");
-    Command::new("powershell.exe")
+    let payload = String::from_utf8_lossy(&discover.stdout);
+    if payload.trim().is_empty() { return Err(RelayError::InvalidInput("没有找到已安装的 ChatGPT/Codex 桌面应用".into())); }
+    serde_json::from_str(payload.trim()).map_err(|error| RelayError::InvalidInput(format!("无法解析 ChatGPT/Codex 安装信息: {error}")))
+}
+
+#[cfg(windows)]
+pub(crate) fn stop_running() -> Result<(), RelayError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "Get-Process -Name 'ChatGPT','Codex','codex-code-mode-host','codex-command-runner-*' -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Milliseconds 800"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    if output.status.success() { Ok(()) } else { Err(RelayError::InvalidInput("无法关闭正在运行的 ChatGPT/Codex".into())) }
+}
+
+#[cfg(windows)]
+pub(crate) fn launch(target: RestartTarget) -> Result<CodexRestartResult, RelayError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let launch = target.launch.replace('\'', "''");
+    let script = if target.kind == "exe" {
+        format!("Start-Process -FilePath '{launch}'")
+    } else {
+        format!("Start-Process explorer.exe -ArgumentList 'shell:AppsFolder\\{launch}'")
+    };
+    let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
         .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
-    Ok(())
+        .output()?;
+    if !output.status.success() { return Err(RelayError::InvalidInput("无法启动最新的 ChatGPT/Codex 桌面应用".into())); }
+    Ok(CodexRestartResult { app_name: target.app_name, version: target.version, installed_at: target.installed_at })
+}
+
+#[cfg(windows)]
+pub fn restart() -> Result<CodexRestartResult, RelayError> {
+    let target = discover_restart_target()?;
+    stop_running()?;
+    launch(target)
 }
 
 #[cfg(not(windows))]
-pub fn restart() -> Result<(), RelayError> {
+pub fn restart() -> Result<CodexRestartResult, RelayError> {
     Err(RelayError::InvalidInput("Codex 自动重启目前仅支持 Windows".into()))
 }
 
@@ -90,6 +191,8 @@ fn configure_document(document: &mut DocumentMut, settings: &AppSettings, model:
     document["model_providers"]["relaydeck"]["base_url"] = value(format!("http://127.0.0.1:{}/v1", settings.gateway_port));
     document["model_providers"]["relaydeck"]["env_key"] = value("RELAYDECK_API_KEY");
     document["model_providers"]["relaydeck"]["wire_api"] = value("responses");
+    document["model_providers"]["relaydeck"]["requires_openai_auth"] = value(false);
+    document["model_providers"]["relaydeck"]["supports_websockets"] = value(false);
 }
 
 #[cfg(windows)]
@@ -116,6 +219,7 @@ mod tests {
         assert_eq!(document["mcp_servers"]["docs"]["url"].as_str(), Some("https://example.test"));
         assert_eq!(document["model_provider"].as_str(), Some("relaydeck"));
         assert_eq!(document["model_providers"]["relaydeck"]["base_url"].as_str(), Some("http://127.0.0.1:1455/v1"));
+        assert_eq!(document["model_providers"]["relaydeck"]["requires_openai_auth"].as_bool(), Some(false));
     }
 
     #[test]

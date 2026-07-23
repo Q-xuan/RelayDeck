@@ -55,6 +55,7 @@ button { color: inherit; }
 .topbar { position: sticky; z-index: 5; top: 0; display: flex; align-items: center; height: 68px; padding: 0 28px; background: rgb(242 244 241 / 92%); border-bottom: 1px solid #e1e4df; backdrop-filter: blur(14px); }
 .page-title { font-family: "Manrope", sans-serif; font-size: 18px; font-weight: 700; }
 .page-meta { margin-left: 10px; color: #8c938d; font-size: 12px; }
+.preview-badge { margin-left: 12px; padding: 3px 7px; border: 1px solid #d9a441; border-radius: 4px; color: #7a5410; background: #fff8df; font-size: 11px; font-weight: 650; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .content { width: 100%; max-width: 1440px; margin: 0 auto; padding: 22px 28px 40px; }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 18px; }

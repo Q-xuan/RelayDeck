@@ -72,6 +72,17 @@ export interface CodexApplyResult {
   model: string;
 }
 
+export interface CodexRestartResult {
+  appName: string;
+  version?: string;
+  installedAt?: string;
+}
+
+export interface CodexApplyAndRestartResult {
+  apply: CodexApplyResult;
+  restart: CodexRestartResult;
+}
+
 export interface ProviderInput {
   id?: string;
   name: string;

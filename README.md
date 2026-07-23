@@ -6,7 +6,7 @@ RelayDeck 是一个面向个人电脑的 Codex 中转管理器。它提供轻量
 
 - Provider 添加、编辑、删除和启停
 - JSON、文本和文件快速导入
-- 保存后自动请求 `/v1/models`，获取模型并选择 Codex 默认模型
+- 保存后请求 `/v1/models` 获取模型，并向选中模型发送最小 `/v1/responses` 请求验证 API Key
 - 仅监听 `127.0.0.1` 的本地 `/v1/*` 代理
 - 连接错误、HTTP 429 和 5xx 自动切换备用节点
 - 流式响应透传
@@ -15,7 +15,7 @@ RelayDeck 是一个面向个人电脑的 Codex 中转管理器。它提供轻量
 - 本地访问密钥、自动启动和仅本机访问控制
 - 兼容标准 OpenAI Responses 中转与 Sub2API
 - 自动备份并应用 Codex `config.toml` 和 `.codex/.env`
-- 可确认后自动重启 Codex；上游切换无需重复重启
+- 可确认后自动重启最新安装的 ChatGPT/Codex；上游切换无需重复重启
 
 ## 开发
 
@@ -32,7 +32,9 @@ npm run tauri dev
 npm run dev
 ```
 
-浏览器预览使用空的本地状态；Tauri 桌面运行时使用 Rust 后端和真实代理。
+浏览器预览只测试界面和导入解析，不会写 Codex 配置、调用真实 Provider 或重启应用。使用 `npm run tauri dev` 或打包后的 `RelayDeck.exe` 测试完整功能。
+
+手动“测活”会对自动选中的模型发起一次最小请求，可能产生极少量 token 费用；后台定时检查只验证 `/v1/models`，不会周期性消耗 token。
 
 
 ## 导入格式

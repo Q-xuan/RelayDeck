@@ -12,7 +12,7 @@ use std::{
 };
 
 use chrono::Utc;
-use models::{AppConfig, AppSettings, AppSnapshot, CodexApplyResult, GatewayStatus, Provider, ProviderInput, ProviderStatus, RequestLog};
+use models::{AppConfig, AppSettings, AppSnapshot, CodexApplyAndRestartResult, CodexApplyResult, CodexRestartResult, GatewayStatus, Provider, ProviderInput, ProviderStatus, RequestLog};
 use tauri::{Manager, State};
 use tokio::{sync::{oneshot, Mutex, RwLock}, task::JoinHandle};
 use uuid::Uuid;
@@ -109,7 +109,7 @@ async fn save_provider(input: ProviderInput, state: State<'_, AppState>) -> Resu
     }
     drop(config);
     state.store.save(&state.config).await.map_err(command_error)?;
-    test_provider_inner(state.inner(), &id).await.or(Ok(provider))
+    test_provider_inner(state.inner(), &id, true).await.or(Ok(provider))
 }
 
 #[tauri::command]
@@ -130,10 +130,10 @@ async fn toggle_provider(id: String, enabled: bool, state: State<'_, AppState>) 
 
 #[tauri::command]
 async fn test_provider(id: String, state: State<'_, AppState>) -> Result<Provider, String> {
-    test_provider_inner(&state, &id).await
+    test_provider_inner(&state, &id, true).await
 }
 
-async fn test_provider_inner(state: &AppState, id: &str) -> Result<Provider, String> {
+async fn test_provider_inner(state: &AppState, id: &str, deep_probe: bool) -> Result<Provider, String> {
     let provider = {
         let mut config = state.config.write().await;
         let provider = config.providers.iter_mut().find(|provider| provider.id == id).ok_or_else(|| "Provider 不存在".to_string())?;
@@ -154,11 +154,21 @@ async fn test_provider_inner(state: &AppState, id: &str) -> Result<Provider, Str
                     updated.latency_ms = Some(started.elapsed().as_millis() as u64);
                     updated.last_error = Some("/models 没有返回可用模型".into());
                 } else {
-                    updated.model = select_codex_model(&models);
+                    let model = select_codex_model(&models);
+                    let probe = if deep_probe { probe_provider(state, &updated, &model).await } else { Ok(()) };
+                    updated.model = model;
                     updated.available_models = models;
-                    updated.status = ProviderStatus::Healthy;
                     updated.latency_ms = Some(started.elapsed().as_millis() as u64);
-                    updated.last_error = None;
+                    match probe {
+                        Ok(()) => {
+                            updated.status = ProviderStatus::Healthy;
+                            updated.last_error = None;
+                        }
+                        Err(error) => {
+                            updated.status = ProviderStatus::Unhealthy;
+                            updated.last_error = Some(error);
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -187,6 +197,37 @@ async fn test_provider_inner(state: &AppState, id: &str) -> Result<Provider, Str
     Ok(updated)
 }
 
+async fn probe_provider(state: &AppState, provider: &Provider, model: &str) -> Result<(), String> {
+    let url = gateway::join_url(&provider.base_url, "/v1/responses");
+    let response = state.client.post(url)
+        .bearer_auth(provider.api_key.as_deref().unwrap_or_default())
+        .json(&serde_json::json!({
+            "model": model,
+            "input": "Reply with OK.",
+            "max_output_tokens": 16,
+            "stream": false,
+            "store": false
+        }))
+        .send().await.map_err(|error| format!("模型请求失败: {error}"))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| format!("无法读取模型响应: {error}"))?;
+    if !status.is_success() {
+        let summary = body.chars().take(180).collect::<String>();
+        return Err(format!("模型 {model} /responses 返回 HTTP {status}: {summary}"));
+    }
+    let payload = serde_json::from_str::<serde_json::Value>(&body).map_err(|error| format!("模型 {model} 返回的不是有效 JSON: {error}"))?;
+    if !is_valid_response_payload(&payload) {
+        return Err(format!("模型 {model} 未返回有效 Responses 结果"));
+    }
+    Ok(())
+}
+
+fn is_valid_response_payload(payload: &serde_json::Value) -> bool {
+    payload.get("id").and_then(serde_json::Value::as_str).is_some()
+        || payload.get("object").and_then(serde_json::Value::as_str) == Some("response")
+        || payload.get("output").and_then(serde_json::Value::as_array).is_some()
+}
+
 #[tauri::command]
 async fn import_providers(providers: Vec<ProviderInput>, state: State<'_, AppState>) -> Result<Vec<Provider>, String> {
     if providers.is_empty() {
@@ -211,7 +252,7 @@ async fn import_providers(providers: Vec<ProviderInput>, state: State<'_, AppSta
     state.store.save(&state.config).await.map_err(command_error)?;
     let mut imported = Vec::with_capacity(imported_ids.len());
     for id in imported_ids {
-        imported.push(test_provider_inner(state.inner(), &id).await?);
+        imported.push(test_provider_inner(state.inner(), &id, true).await?);
     }
     Ok(imported)
 }
@@ -296,8 +337,24 @@ async fn apply_codex_config(state: State<'_, AppState>) -> Result<CodexApplyResu
 }
 
 #[tauri::command]
-async fn restart_codex() -> Result<(), String> {
+async fn restart_codex() -> Result<CodexRestartResult, String> {
     codex::restart().map_err(command_error)
+}
+
+#[tauri::command]
+async fn apply_and_restart_codex(state: State<'_, AppState>) -> Result<CodexApplyAndRestartResult, String> {
+    let (settings, model) = {
+        let config = state.config.read().await;
+        let mut providers = config.providers.iter().filter(|provider| provider.enabled && provider.status == ProviderStatus::Healthy).collect::<Vec<_>>();
+        providers.sort_by_key(|provider| provider.priority);
+        let provider = providers.first().ok_or_else(|| "请先导入并深度测活至少一个 Provider".to_string())?;
+        (config.settings.clone(), provider.model.clone())
+    };
+    let target = codex::discover_restart_target().map_err(command_error)?;
+    codex::stop_running().map_err(command_error)?;
+    let apply = codex::apply(&settings, &model).map_err(command_error)?;
+    let restart = codex::launch(target).map_err(command_error)?;
+    Ok(CodexApplyAndRestartResult { apply, restart })
 }
 
 async fn gateway_status(state: &AppState) -> Result<GatewayStatus, String> {
@@ -369,7 +426,8 @@ async fn background_health_checks(state: AppState) {
         }
         let ids = state.config.read().await.providers.iter().filter(|provider| provider.enabled).map(|provider| provider.id.clone()).collect::<Vec<_>>();
         for id in ids {
-            let _ = test_provider_inner(&state, &id).await;
+            // Periodic checks only validate authentication and model discovery to avoid recurring token charges.
+            let _ = test_provider_inner(&state, &id, false).await;
         }
     }
 }
@@ -386,7 +444,7 @@ fn load_config(path: &PathBuf) -> Result<AppConfig, RelayError> {
 
 #[cfg(test)]
 mod model_tests {
-    use super::{extract_model_ids, select_codex_model};
+    use super::{extract_model_ids, is_valid_response_payload, select_codex_model};
 
     #[test]
     fn extracts_models_from_openai_list_shape() {
@@ -398,6 +456,12 @@ mod model_tests {
     fn prefers_sol_for_codex_when_available() {
         let models = vec!["codex-auto-review".into(), "gpt-5.4".into(), "gpt-5.6-sol".into()];
         assert_eq!(select_codex_model(&models), "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn accepts_openai_responses_payload() {
+        assert!(is_valid_response_payload(&serde_json::json!({"id": "resp_123", "object": "response", "output": []})));
+        assert!(!is_valid_response_payload(&serde_json::json!({"message": "login required"})));
     }
 }
 
@@ -430,7 +494,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot, save_provider, delete_provider, toggle_provider, test_provider,
-            import_providers, save_settings, start_gateway, stop_gateway, clear_logs, reset_access_key, apply_codex_config, restart_codex,
+            import_providers, save_settings, start_gateway, stop_gateway, clear_logs, reset_access_key, apply_codex_config, restart_codex, apply_and_restart_codex,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RelayDeck");
