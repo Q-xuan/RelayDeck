@@ -113,6 +113,7 @@ export async function mockInvoke<T>(command: string, args: Record<string, unknow
     persist(state);
     return { configPath: state.codex.configPath, model: state.codex.activeModel } as T;
   }
+  if (command === "restart_codex") return undefined as T;
   if (command === "import_providers") {
     const inputs = args.providers as ProviderInput[];
     for (const input of inputs) {

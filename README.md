@@ -14,7 +14,8 @@ RelayDeck 是一个面向个人电脑的 Codex 中转管理器。它提供轻量
 - 本地请求状态、成功失败、故障切换、延迟与流量统计
 - 本地访问密钥、自动启动和仅本机访问控制
 - 兼容标准 OpenAI Responses 中转与 Sub2API
-- 自动备份并应用 Codex `config.toml`，上游切换无需重复重启 Codex
+- 自动备份并应用 Codex `config.toml` 和 `.codex/.env`
+- 可确认后自动重启 Codex；上游切换无需重复重启
 
 ## 开发
 

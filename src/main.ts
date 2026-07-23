@@ -148,7 +148,7 @@ function servicePanel(): string {
     <div class="panel-header service-header">
       <div class="service-title-icon"><i data-lucide="database"></i></div><div><div class="panel-title">本地 API 服务</div><div class="panel-subtitle inline">OpenAI Responses Gateway</div></div>
       <div class="service-badges"><span class="service-badge ${gateway.running ? "online" : ""}">${gateway.running ? "运行中" : "已停止"}</span><span class="service-badge">仅本机</span><span class="service-badge ${snapshot.codex.configured ? "online" : ""}">${snapshot.codex.configured ? "Codex 已接入" : "Codex 未接入"}</span></div>
-      <div class="panel-actions"><button class="button" data-action="apply-codex" ${healthyProviders().length ? "" : "disabled"}><i data-lucide="refresh-cw"></i>应用到 Codex</button><button class="button ${gateway.running ? "danger" : "primary"}" data-action="toggle-gateway"><i data-lucide="${gateway.running ? "square" : "play"}"></i>${gateway.running ? "停止" : "启动"}</button></div>
+      <div class="panel-actions"><button class="button" data-action="apply-codex" ${healthyProviders().length ? "" : "disabled"}><i data-lucide="refresh-cw"></i>应用到 Codex</button><button class="button icon" data-action="apply-and-restart-codex" ${healthyProviders().length ? "" : "disabled"} title="应用并重启 Codex" aria-label="应用并重启 Codex"><i data-lucide="power"></i></button><button class="button ${gateway.running ? "danger" : "primary"}" data-action="toggle-gateway"><i data-lucide="${gateway.running ? "square" : "play"}"></i>${gateway.running ? "停止" : "启动"}</button></div>
     </div>
     <div class="service-config-grid">
       <div class="service-config-item"><div class="config-label">服务地址</div><div class="config-value"><code>${address}</code><button class="mini-button" data-action="copy" data-copy="${address}" title="复制地址" aria-label="复制地址"><i data-lucide="copy"></i></button></div></div>
@@ -222,7 +222,7 @@ function settingsView(): string {
       <div class="settings-title">Codex 接入</div>
       <div class="codex-status-row"><span class="status-badge ${snapshot.codex.configured ? "healthy" : "unknown"}">${snapshot.codex.configured ? "已应用" : "未应用"}</span><span>${escapeHtml(snapshot.codex.configPath)}</span></div>
       <div class="code-box"><button class="copy-dark code-copy" data-action="copy" data-copy="${escapeHtml(codexSnippet())}" title="复制配置" aria-label="复制配置"><i data-lucide="copy"></i></button>${escapeHtml(codexSnippet())}</div>
-      <div class="settings-actions"><button class="button primary" data-action="apply-codex" ${healthyProviders().length ? "" : "disabled"}><i data-lucide="refresh-cw"></i>备份并应用到 Codex</button></div>
+      <div class="settings-actions"><button class="button" data-action="apply-codex" ${healthyProviders().length ? "" : "disabled"}><i data-lucide="refresh-cw"></i>备份并应用</button><button class="button primary" data-action="apply-and-restart-codex" ${healthyProviders().length ? "" : "disabled"}><i data-lucide="power"></i>应用并重启 Codex</button></div>
       <div class="field-hint" style="margin-top:10px">会备份现有 config.toml 并写入用户环境变量；首次应用后重启 Codex。之后切换上游不需要重启。</div>
     </section>
   </div>`;
@@ -279,6 +279,7 @@ async function handleAction(element: HTMLElement): Promise<void> {
   if (action === "toggle-key-visibility") { revealAccessKey = !revealAccessKey; render(); }
   if (action === "reset-access-key") await resetAccessKey();
   if (action === "apply-codex") await applyCodexConfig();
+  if (action === "apply-and-restart-codex") await applyAndRestartCodex();
 }
 
 async function reload(): Promise<void> {
@@ -346,6 +347,16 @@ async function applyCodexConfig(): Promise<void> {
     const result = await call<CodexApplyResult>("apply_codex_config");
     await reload();
     toast(`Codex 已切换到 RelayDeck · ${result.model}`);
+  } catch (error) { toast(String(error), "error"); }
+}
+
+async function applyAndRestartCodex(): Promise<void> {
+  if (!window.confirm("将备份并应用配置，然后关闭所有 Codex 窗口并重新启动。未保存的 Codex 任务会中断，确定继续？")) return;
+  try {
+    const result = await call<CodexApplyResult>("apply_codex_config");
+    await call("restart_codex");
+    await reload();
+    toast(`配置已应用，Codex 正在重启 · ${result.model}`);
   } catch (error) { toast(String(error), "error"); }
 }
 

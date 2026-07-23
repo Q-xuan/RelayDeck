@@ -295,6 +295,11 @@ async fn apply_codex_config(state: State<'_, AppState>) -> Result<CodexApplyResu
     codex::apply(&config.settings, &provider.model).map_err(command_error)
 }
 
+#[tauri::command]
+async fn restart_codex() -> Result<(), String> {
+    codex::restart().map_err(command_error)
+}
+
 async fn gateway_status(state: &AppState) -> Result<GatewayStatus, String> {
     let running = state.gateway.lock().await.is_some();
     let config = state.config.read().await;
@@ -425,7 +430,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot, save_provider, delete_provider, toggle_provider, test_provider,
-            import_providers, save_settings, start_gateway, stop_gateway, clear_logs, reset_access_key, apply_codex_config,
+            import_providers, save_settings, start_gateway, stop_gateway, clear_logs, reset_access_key, apply_codex_config, restart_codex,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RelayDeck");
