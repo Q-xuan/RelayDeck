@@ -33,16 +33,6 @@ npm run dev
 
 浏览器预览使用空的本地状态；Tauri 桌面运行时使用 Rust 后端和真实代理。
 
-## CI 打包
-
-推送到 `master` 会通过 GitHub Actions 构建 Windows x64 的独立 EXE、NSIS 安装程序和 MSI，并上传为工作流构件。
-
-创建 `v*` 标签会同时发布 GitHub Release：
-
-```powershell
-git tag v0.1.0
-git push origin v0.1.0
-```
 
 ## 导入格式
 
