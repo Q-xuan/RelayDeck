@@ -1,0 +1,68 @@
+name: Windows Release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run frontend build
+        run: npm run build
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Build Windows bundles
+        run: npm run tauri -- build
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item src-tauri/target/release/relaydeck.exe artifacts/RelayDeck.exe
+          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi artifacts/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RelayDeck-windows-x64
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
